@@ -41,6 +41,9 @@ def load_and_preprocess_data(args):
         num_labels = 3
         metric_name = "accuracy"
         
+        # 过滤掉标签无效的样本（例如标签为 -1）
+        dataset["train"] = dataset["train"].filter(lambda x: x["label"] in [0, 1, 2])
+        dataset["validation"] = dataset["validation"].filter(lambda x: x["label"] in [0, 1, 2])
         def preprocess_function(examples):
             return tokenizer(
                 examples["premise"],
@@ -82,6 +85,7 @@ def load_and_preprocess_data(args):
             with_indices=True,
             batched=True,
             input_columns=["idx"]
+            # input_columns=["idx"]
         )
     elif args.dataset == "stsb":
         tokenized_datasets = tokenized_datasets.map(
@@ -89,6 +93,7 @@ def load_and_preprocess_data(args):
             with_indices=True,
             batched=True,
             input_columns=["idx"]
+            # input_columns=["idx"]
         )
     
     # 设置PyTorch格式
