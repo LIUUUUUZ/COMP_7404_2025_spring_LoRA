@@ -9,14 +9,51 @@ from parser import parse_args
 
 def configure_adapter(model, args):
     """配置Adapter参数"""
-    adapter_config = AdapterConfig(
-        peft_type=PeftType.ADAPTER,
-        task_type=TaskType.SEQ_CLS,
-        adapter_size=args.lora_rank * 4,
-        r=args.lora_rank,
-        bias="none"
+    # 0.3M 参数版本的 AdptD
+    adapter_config_03M = AdapterConfig(
+        peft_type="ADAPTER",  # 使用适配器
+        task_type=TaskType.SEQ_CLS,  # 序列分类任务
+        adapter_hidden_size=24,  # bottleneck_dim = 768/32 = 24
+        adapter_size=None,  # 使用 adapter_hidden_size 替代
+        r=32,  # 压缩率为32，对应论文中的标准设置
+        non_linearity="relu",
+        adapter_dropout=0.1,
+        target_modules=["output.dense"],  # Pfeiffer适配器结构，只在输出后添加
+        adapter_config={
+            "adapter_type": "pfeiffer",  # 使用Pfeiffer适配器
+            "non_linearity": "relu"
+        },
+        # AdapterDrop核心：只在较高层添加适配器，低层丢弃
+        adapter_layers=[6, 7, 8, 9, 10, 11],  # 只在后6层添加适配器
+        use_parallel_adapter=False,
+        use_adapterp=True  # 使用Pfeiffer结构
     )
-    return get_peft_model(model, adapter_config)
+    
+    # 0.9M 参数版本的 AdptD
+    adapter_config_09M = AdapterConfig(
+        peft_type="ADAPTER",
+        task_type=TaskType.SEQ_CLS,
+        adapter_hidden_size=64,  # bottleneck_dim = 768/12 = 64
+        adapter_size=None,
+        r=12,  # 减小压缩率以增加参数数量
+        non_linearity="relu",
+        adapter_dropout=0.1,
+        target_modules=["output.dense"],  # Pfeiffer适配器结构
+        adapter_config={
+            "adapter_type": "pfeiffer",
+            "non_linearity": "relu"
+        },
+        # 更多层添加适配器
+        adapter_layers=[3, 4, 5, 6, 7, 8, 9, 10, 11],  # 从第3层开始添加适配器
+        use_parallel_adapter=False,
+        use_adapterp=True
+    )
+    if args.adapter == "adapter_config_03M":
+        return get_peft_model(model, adapter_config_03M)
+    elif args.adapter == "adapter_config_09M":
+        return get_peft_model(model, adapter_config_09M)
+    else:
+        raise ValueError(f"Unsupported adapter config: {args.adapter}")
 
 def load_dataloader(args):
     """适配器专用数据加载器"""
@@ -88,3 +125,25 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+'''
+python main.py 
+--model_name FacebookAI/roberta-base 
+--method adapter 
+--dataset mnli 
+--learning_rate 5e-4 
+--batch_size 16 
+--num_epochs 30 
+--warmup_ratio 0.06 
+--max_seq_length 512
+
+python main.py 
+--model_name FacebookAI/roberta-base 
+--method adapter 
+--dataset sts-b 
+--learning_rate 4e-4 
+--batch_size 16 
+--num_epochs 40 
+--warmup_ratio 0.06 
+--max_seq_length 512
+'''
