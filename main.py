@@ -409,7 +409,7 @@ def run_experiments(args):
 
 def run_lora_experiments(args, train_dataloader, eval_dataloader, num_labels, metric_name):
     """测试不同 LoRA Rank 对训练时间和评估性能的影响"""
-    lora_ranks = [2, 4, 8, 16, 32]  # 选择不同的 LoRA 秩
+    lora_ranks = [2, 3, 4, 8, 16, 32]  # 选择不同的 LoRA 秩
     results = []
 
     for r in lora_ranks:
