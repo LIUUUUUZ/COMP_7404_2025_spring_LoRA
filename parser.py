@@ -46,6 +46,8 @@ def get_parser():
                         help="LoRA层Dropout概率, 本次实验中不考虑, 默认为0.1")
     parser.add_argument("--test_iters", type=int, default=100,
                         help="测试预测时的iter数")
+    parser.add_argument("--compare_ranks", action="store_true",
+                        help="是否对比不同 LoRA rank 的影响")
     
     #使用方法为 python xxxx.py --lora_target q v o,必须要有至少一个, 平时默认全部使用
     parser.add_argument("--lora_target", type=str, nargs='+', 
