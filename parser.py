@@ -53,8 +53,8 @@ def get_parser():
                         help="LoRA运用的attention目标矩阵的组合")
     
     # Adapter配置参数
-    parser.add_argument("--adapter", type=str, choices=["adapter_config_03M", "adapter_config_09M"], 
-                        help="Adapter配置类型")
+    parser.add_argument("--adapter", type=str, choices=["adapter_config_03M", "adapter_config_09M","adapter_config"],
+                        default="adapter_config", help="adapter参数")
     
 
     
