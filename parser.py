@@ -52,9 +52,9 @@ def get_parser():
                         default=["q", "k", "v", "o"],
                         help="LoRA运用的attention目标矩阵的组合")
     
-    # Adapter线性层微调参数（若不完善请修改删减增补）
-    # 暂无，因为此程序中adapter层不需要更改参数设置，可以直接写在程序中，若需要可以后续添加
-    
+    # Adapter配置参数
+    parser.add_argument("--adapter", type=str, choices=["adapter_config_03M", "adapter_config_09M","adapter_config"],
+                        default="adapter_config", help="adapter参数")
     
 
     
