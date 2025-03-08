@@ -42,6 +42,9 @@ def load_and_preprocess_data(args):
         num_labels = 3
         metric_name = "accuracy"
         
+        # 过滤掉标签无效的样本（例如标签为 -1）
+        dataset["train"] = dataset["train"].filter(lambda x: x["label"] in [0, 1, 2])
+        dataset["validation"] = dataset["validation"].filter(lambda x: x["label"] in [0, 1, 2])
         def preprocess_function(examples):
             return tokenizer(
                 examples["premise"],
@@ -83,6 +86,7 @@ def load_and_preprocess_data(args):
             with_indices=True,
             batched=True,
             input_columns=["idx"]
+            # input_columns=["idx"]
         )
     elif args.dataset == "stsb":
         tokenized_datasets = tokenized_datasets.map(
@@ -90,6 +94,7 @@ def load_and_preprocess_data(args):
             with_indices=True,
             batched=True,
             input_columns=["idx"]
+            # input_columns=["idx"]
         )
     
     # 设置PyTorch格式
@@ -119,6 +124,63 @@ def load_and_preprocess_data(args):
         )
     
     return train_dataloader, eval_dataloader, num_labels, metric_name
+
+def configure_adapter(model, args):
+    """配置Adapter参数"""
+    adapter_config = AdapterConfig(
+            peft_type=PeftType.ADAPTER,
+            task_type=TaskType.SEQ_CLS,
+            adapter_size=args.lora_rank * 4,  # 使用rank*4作为adapter大小，以进行公平的比较
+            r=args.lora_rank,
+            bias="none"
+        )
+    # 0.3M 参数版本的 AdptD
+    adapter_config_03M = AdapterConfig(
+        peft_type="ADAPTER",  # 使用适配器
+        task_type=TaskType.SEQ_CLS,  # 序列分类任务
+        adapter_hidden_size=24,  # bottleneck_dim = 768/32 = 24
+        adapter_size=None,  # 使用 adapter_hidden_size 替代
+        r=32,  # 压缩率为32，对应论文中的标准设置
+        non_linearity="relu",
+        adapter_dropout=0.1,
+        target_modules=["output.dense"],  # Pfeiffer适配器结构，只在输出后添加
+        adapter_config={
+            "adapter_type": "pfeiffer",  # 使用Pfeiffer适配器
+            "non_linearity": "relu"
+        },
+        # AdapterDrop核心：只在较高层添加适配器，低层丢弃
+        adapter_layers=[6, 7, 8, 9, 10, 11],  # 只在后6层添加适配器
+        use_parallel_adapter=False,
+        use_adapterp=True  # 使用Pfeiffer结构
+    )
+    
+    # 0.9M 参数版本的 AdptD
+    adapter_config_09M = AdapterConfig(
+        peft_type="ADAPTER",
+        task_type=TaskType.SEQ_CLS,
+        adapter_hidden_size=64,  # bottleneck_dim = 768/12 = 64
+        adapter_size=None,
+        r=12,  # 减小压缩率以增加参数数量
+        non_linearity="relu",
+        adapter_dropout=0.1,
+        target_modules=["output.dense"],  # Pfeiffer适配器结构
+        adapter_config={
+            "adapter_type": "pfeiffer",
+            "non_linearity": "relu"
+        },
+        # 更多层添加适配器
+        adapter_layers=[3, 4, 5, 6, 7, 8, 9, 10, 11],  # 从第3层开始添加适配器
+        use_parallel_adapter=False,
+        use_adapterp=True
+    )
+    if args.adapter =="adapter_config":
+        return get_peft_model(model,adapter_config)
+    elif args.adapter == "adapter_config_03M":
+        return get_peft_model(model, adapter_config_03M)
+    elif args.adapter == "adapter_config_09M":
+        return get_peft_model(model, adapter_config_09M)
+    else:
+        raise ValueError(f"Unsupported adapter config: {args.adapter}")
 
 def load_model(args, num_labels):
     """根据方法加载模型, 并根据需要应用LoRA或Adapter."""
@@ -153,21 +215,15 @@ def load_model(args, num_labels):
         model = get_peft_model(model, lora_config)
         
     elif args.method == "adapter":
-        # 配置Adapter
-        adapter_config = AdapterConfig(
-            peft_type=PeftType.ADAPTER,
-            task_type=TaskType.SEQ_CLS,
-            adapter_size=args.lora_rank * 4,  # 使用rank*4作为adapter大小，以进行公平的比较
-            r=args.lora_rank,
-            bias="none"
-        )
-        
-        # 应用Adapter配置
-        model = get_peft_model(model, adapter_config)
+        # 使用Adapter配置
+        model = configure_adapter(model, args)
         
     elif args.method == "full_ft":
-        # 对于全微调，所有参数已经是可训练的
-        pass
+        for param in model.parameters():
+            param.requires_grad = True
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        all_params = sum(p.numel() for p in model.parameters())
+        print(f"Full fine-tuning - 可训练参数: {trainable_params} ({trainable_params/all_params:.2%})")
     
     else:
         raise ValueError(f"不支持的方法 {args.method}.")
