@@ -18,7 +18,7 @@ from peft import (
     get_peft_model,
     LoraConfig,
     TaskType,
-    AdapterConfig,
+    # AdapterConfig,
     PeftType,
     PeftModel
 )
@@ -85,16 +85,12 @@ def load_and_preprocess_data(args):
             lambda examples, indices: {"labels": dataset["train"][indices]["label"]},
             with_indices=True,
             batched=True,
-            input_columns=["idx"]
-            # input_columns=["idx"]
         )
     elif args.dataset == "stsb":
         tokenized_datasets = tokenized_datasets.map(
             lambda examples, indices: {"labels": dataset["train"][indices]["label"]},
             with_indices=True,
             batched=True,
-            input_columns=["idx"]
-            # input_columns=["idx"]
         )
     
     # 设置PyTorch格式
@@ -188,19 +184,34 @@ def load_model(args, num_labels):
         args.model_name, 
         num_labels=num_labels
     )
-    
+
     if args.method == "lora":
+            #         # 注意力模块
+            # "query",
+            # "key",
+            # "value",
+            # "attention.output.dense",
+            # # FFN模块
+            # "intermediate.dense",
+            # "output.dense",
+            # # 分类头
+            # "classifier.dense",
+            # "classifier.out_proj"
         # 配置LoRA
         target_modules = []
-        for target in args.lora_target:
-            if target == "q":
-                target_modules.append("query")
-            elif target == "k":
-                target_modules.append("key")
-            elif target == "v":
-                target_modules.append("value")
-            elif target == "o":
-                target_modules.append("output")
+        if "q" in args.lora_target:
+            target_modules.append("query")
+        if "k" in args.lora_target:
+            target_modules.append("key")
+        if "v" in args.lora_target:
+            target_modules.append("value")
+        if "o" in args.lora_target:
+            target_modules.append("attention.output.dense")
+            target_modules.append("output.dense") 
+            target_modules.append("intermediate.dense") 
+
+        target_modules.append("classifier.dense")
+        target_modules.append("classifier.out_proj")
         
         lora_config = LoraConfig(
             r=args.lora_rank,
@@ -208,12 +219,23 @@ def load_model(args, num_labels):
             lora_dropout=args.lora_dropout,
             target_modules=target_modules,
             bias="none",
-            task_type=TaskType.SEQ_CLS
+            task_type=TaskType.SEQ_CLS,
+            inference_mode=False,
+            init_lora_weights=True,
+            modules_to_save=None  # 不需要特别保存模块，因为我们已经在target_modules中包含了分类器
         )
+
+        print("LoRA配置:")
+        print(f"目标模块: {target_modules}")
+        print(f"LoRA秩: {args.lora_rank}")
+        print(f"LoRA alpha: {args.lora_alpha}")
         
         # 应用LoRA配置
         model = get_peft_model(model, lora_config)
         
+        # 打印可训练参数信息
+        model.print_trainable_parameters()
+
     elif args.method == "adapter":
         # 使用Adapter配置
         model = configure_adapter(model, args)
@@ -250,12 +272,20 @@ def train(args, model, train_dataloader, eval_dataloader, metric_name):
     all_params = sum(p.numel() for p in model.parameters())
     print(f"可训练参数: {trainable_params} ({trainable_params/all_params:.2%} of all parameters)")
     
-    # 准备优化器和调度器
+    # 准备优化器
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.learning_rate,
         weight_decay=args.weight_decay
     )
+    
+    # 设置损失函数
+    if args.dataset == "snli":
+        # 分类任务使用交叉熵损失
+        criterion = torch.nn.CrossEntropyLoss()
+    elif args.dataset == "stsb":
+        # 回归任务使用MSE损失，并进行标准化
+        criterion = torch.nn.MSELoss()
     
     total_steps = len(train_dataloader) * args.num_epochs
     warmup_steps = int(total_steps * args.warmup_ratio)
@@ -268,26 +298,41 @@ def train(args, model, train_dataloader, eval_dataloader, metric_name):
     # 训练循环
     model.train()
     total_train_time = 0
-    best_metric = 0.0
+    best_metric = float('-inf')
     
     for epoch in range(args.num_epochs):
         print(f"Epoch {epoch+1}/{args.num_epochs}")
         epoch_start_time = time.time()
-        
+        epoch_loss = 0
         progress_bar = tqdm(train_dataloader, desc="训练")
         for batch in progress_bar:
             batch = {k: v.to(device) for k, v in batch.items()}
             
+            # 前向传播
             outputs = model(**batch)
-            loss = outputs.loss
             
+            # 根据任务类型计算损失
+            if args.dataset == "snli":
+                loss = criterion(outputs.logits, batch["labels"])
+            elif args.dataset == "stsb":
+                # 对于回归任务，确保预测值和标签的形状匹配
+                predictions = outputs.logits.squeeze()
+                labels = batch["labels"].float()
+                loss = criterion(predictions, labels)    
+
+            epoch_loss += loss.item()  
+
+            # 反向传播
             loss.backward()
+            
+            # 梯度裁剪，防止梯度爆炸
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
             
-            progress_bar.set_postfix({"loss": loss.item()})
+            progress_bar.set_postfix({"epoch_loss": epoch_loss})
         
         epoch_time = time.time() - epoch_start_time
         total_train_time += epoch_time
@@ -402,10 +447,13 @@ def evaluate(args, model, eval_dataloader, metric_name, predict=False):
                 predictions = outputs.logits.squeeze()
             
             all_preds.extend(predictions.cpu().numpy())
-            all_labels.extend(batch["labels"].cpu().numpy())
+            all_labels.extend(batch["labels"].float().cpu().numpy())
     
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
+
+    # print(predictions)
+    # print(batch["labels"])
     
     metrics = compute_metrics(all_preds, all_labels, metric_name)
     eval_time = time.time() - start_time
